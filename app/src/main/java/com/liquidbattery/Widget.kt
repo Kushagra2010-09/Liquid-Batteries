@@ -1,6 +1,7 @@
 package com.liquidbattery
 
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.appwidget.AppWidgetManager
 import android.text.format.DateFormat
@@ -74,7 +75,7 @@ private fun WidgetContent(ctx: Context, s: UiSettings, snap: BatterySnapshot?, a
     )
     val bmp = WidgetArt.draw(size.width.value, size.height.value, ctx.resources.displayMetrics.density, args)
 
-    Box(GlanceModifier.fillMaxSize().clickable(actionStartActivity<MainActivity>())) {
+    Box(GlanceModifier.fillMaxSize().clickable(actionStartActivity(Intent(ctx, MainActivity::class.java)))) {
         Image(
             ImageProvider(bmp),
             contentDescription = "Liquid Battery",
