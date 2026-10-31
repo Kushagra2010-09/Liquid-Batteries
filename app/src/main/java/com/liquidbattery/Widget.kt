@@ -4,11 +4,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
+import androidx.glance.LocalContext
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
@@ -25,7 +27,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 
-class LiquidBatteryWidget : GlanceAppWidget() {
+class LiquidWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val percent = readPhoneBattery(context)
@@ -53,15 +55,18 @@ private fun tierColor(percent: Int): Color = when {
     else -> Color(0xFFFF453A)           // red
 }
 
-@androidx.compose.runtime.Composable
+@Composable
 private fun WidgetContent(percent: Int?) {
+    val context = LocalContext.current
+    val openApp = actionStartActivity(Intent(context, MainActivity::class.java))
+
     Column(
         modifier = GlanceModifier
             .fillMaxSize()
             .background(Color(0x66FFFFFF))
             .cornerRadius(24.dp)
             .padding(16.dp)
-            .clickable(actionStartActivity<MainActivity>()),
+            .clickable(openApp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -93,6 +98,6 @@ private fun WidgetContent(percent: Int?) {
     }
 }
 
-class LiquidBatteryWidgetReceiver : GlanceAppWidgetReceiver() {
-    override val glanceAppWidget: GlanceAppWidget = LiquidBatteryWidget()
+class LiquidWidgetReceiver : GlanceAppWidgetReceiver() {
+    override val glanceAppWidget: GlanceAppWidget = LiquidWidget()
 }
