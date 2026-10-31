@@ -18,11 +18,4 @@ Tried in this order for each *connected* paired device:
 
 If none work, the app shows "Battery unavailable" (connection state is shown separately) and, optionally, the last real reading with its timestamp.
 
-## Limitations (honest list)
-- Many devices (a lot of smartwatches and cheap earbuds) report battery only to their own companion app through a proprietary protocol. Liquid Battery cannot read these.
-- **boAt Lunar Vista: compatibility is untested.** Use Devices → *Probe* on the watch. It lists the GATT services the watch exposes. If `0x180F` is present, battery will work; if not, it needs the manufacturer protocol.
-- Widget updates: Android limits background work. Periodic refresh is at best every 15 minutes, plus a refresh on Bluetooth connect/disconnect, charger events, opening the app, and tapping the widget's refresh arrow.
-- Widget transparency is exact on Android 12+. On Android 9-11 the widget uses a fixed translucent background.
-- True backdrop blur is not possible inside widgets; the glass look is layered translucency with highlights.
-- Widget settings (theme, transparency, accent, device list) apply to all Liquid Battery widgets.
-- This project was written without being compiled or run on hardware. First build may need small fixes.
+
