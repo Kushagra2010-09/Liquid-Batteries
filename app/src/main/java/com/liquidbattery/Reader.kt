@@ -28,6 +28,28 @@ object HfpCache {
         val t = parts[1].toLongOrNull() ?: return null
         return if (System.currentTimeMillis() - t <= maxAgeMs) parts[0].toIntOrNull() else null
     }
+
+    /** Parses an Apple-style +IPHONEACCEV headset report (key 1 = battery 0..9). Returns true if a level was stored. */
+    @Suppress("DEPRECATION")
+    fun parseVendor(c: Context, i: Intent): Boolean {
+        val cmd = i.getStringExtra(BluetoothHeadset.EXTRA_VENDOR_SPECIFIC_HEADSET_EVENT_CMD) ?: return false
+        if (!cmd.contains("IPHONEACCEV")) return false
+        val args = i.getSerializableExtra(BluetoothHeadset.EXTRA_VENDOR_SPECIFIC_HEADSET_EVENT_ARGS) as? Array<*> ?: return false
+        val dev = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return false
+        val n = (args.getOrNull(0) as? Number)?.toInt() ?: return false
+        var k = 1
+        var found = false
+        repeat(n) {
+            val key = (args.getOrNull(k) as? Number)?.toInt()
+            val v = (args.getOrNull(k + 1) as? Number)?.toInt()
+            if (key == 1 && v != null) {
+                put(c, dev.address, ((v + 1) * 10).coerceIn(0, 100))
+                found = true
+            }
+            k += 2
+        }
+        return found
+    }
 }
 
 object Reader {
@@ -66,7 +88,7 @@ object Reader {
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun devices(c: Context, prev: Map<String, DeviceState>): Pair<List<DeviceState>, Boolean> {
+    suspend fun devices(c: Context, prev: Map<String, DeviceState>, gatt: Boolean = true): Pair<List<DeviceState>, Boolean> {
         val now = System.currentTimeMillis()
         val mgr = c.getSystemService(BluetoothManager::class.java) ?: return emptyList<DeviceState>() to false
         val adapter = mgr.adapter ?: return emptyList<DeviceState>() to false
@@ -78,7 +100,7 @@ object Reader {
         val bonded = try { adapter.bondedDevices.toList() } catch (e: SecurityException) { emptyList() }
         val connectedSet: Set<String> = coroutineScope {
             listOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET, 4 /* HID host */)
-                .map { pr -> async { profileConnected(c, adapter, pr) } }
+                .map { pr -> async { profileConnected(c, adapter, pr, if (gatt) 3000L else 1200L) } }
                 .awaitAll().flatten().toSet()
         }
         val gattSet: Set<String> = try {
@@ -102,7 +124,12 @@ object Reader {
                 reflectBattery(d)?.let { level = it; src = "Bluetooth stack (system)" }
                 if (level == null) HfpCache.get(c, d.address)?.let { level = it; src = "Headset report (HFP)" }
                 if (level == null && d.type != BluetoothDevice.DEVICE_TYPE_CLASSIC) {
-                    readGatt(c, d)?.let { level = it; src = "GATT Battery Service (0x180F)" }
+                    if (gatt) {
+                        readGatt(c, d)?.let { level = it; src = "GATT Battery Service (0x180F)" }
+                    } else if (old != null && old.connected && old.source?.startsWith("GATT") == true) {
+                        // fast pass: keep the last GATT value until the next full read
+                        old.level?.let { level = it; src = old.source }
+                    }
                 }
             }
             val lk = level ?: old?.lastKnownLevel
@@ -141,8 +168,8 @@ object Reader {
     } catch (e: Throwable) { false }
 
     @SuppressLint("MissingPermission")
-    private suspend fun profileConnected(c: Context, adapter: BluetoothAdapter, profile: Int): Set<String> =
-        withTimeoutOrNull(3000) {
+    private suspend fun profileConnected(c: Context, adapter: BluetoothAdapter, profile: Int, timeoutMs: Long): Set<String> =
+        withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine<Set<String>> { cont ->
                 val l = object : BluetoothProfile.ServiceListener {
                     override fun onServiceConnected(p: Int, proxy: BluetoothProfile) {

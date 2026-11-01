@@ -3,13 +3,16 @@ package com.liquidbattery
 import android.app.Application
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothHeadset
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.glance.appwidget.updateAll
 import androidx.work.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
@@ -28,7 +31,7 @@ object Repo {
     suspend fun refreshPhone(ctx: Context) {
         val c = ctx.applicationContext
         val store = Store(c)
-        if (store.snapshot.first() == null) { refresh(c); return }
+        if (store.snapshot.first() == null) { refresh(c, gatt = false); return }
         mutex.withLock {
             val prev = store.snapshot.first() ?: return@withLock
             val ph = Reader.phone(c)
@@ -44,14 +47,18 @@ object Repo {
             b.updatedAt - a.updatedAt < 5 * 60_000L &&
             a.devices.map { it.copy(updatedAt = 0L, lastKnownAt = 0L) } == b.devices.map { it.copy(updatedAt = 0L, lastKnownAt = 0L) }
 
-    suspend fun refresh(ctx: Context) = mutex.withLock {
+    /**
+     * gatt = false is the FAST path (well under a second): connection state + instantly available
+     * battery sources only. gatt = true also opens BLE connections to read 0x180F (can take seconds).
+     */
+    suspend fun refresh(ctx: Context, gatt: Boolean = true) = mutex.withLock {
         val c = ctx.applicationContext
         var changed = true
         try {
             val store = Store(c)
             val prev = store.snapshot.first()
             val phone = Reader.phone(c)
-            val (devs, btOn) = Reader.devices(c, prev?.devices.orEmpty().associateBy { it.id })
+            val (devs, btOn) = Reader.devices(c, prev?.devices.orEmpty().associateBy { it.id }, gatt)
             Alerts.process(c, store, prev?.devices.orEmpty(), devs, store.metas.first())
             val snap = BatterySnapshot(phone, devs, btOn, Reader.hasPermission(c), System.currentTimeMillis())
             // skip the save and the widget redraw when nothing visible changed (saves battery)
@@ -61,6 +68,15 @@ object Repo {
             // keep the previous snapshot; never crash a background refresh
         }
         if (changed) LiquidWidget().updateAll(c)
+    }
+
+    /** A device connects in stages (link, then audio profile, then battery report): re-check quickly 3 times. */
+    suspend fun quickBurst(ctx: Context) {
+        refresh(ctx, gatt = false)
+        delay(2000)
+        refresh(ctx, gatt = false)
+        delay(3000)
+        refresh(ctx, gatt = false)
     }
 }
 
@@ -82,48 +98,47 @@ object Scheduler {
         )
     }
 
-    /** After a device connects, its audio profile comes up a few seconds later: re-check 3 times. */
-    fun burst(ctx: Context) {
-        val wm = WorkManager.getInstance(ctx)
-        listOf(3L, 10L, 25L).forEachIndexed { i, sec ->
-            val req = OneTimeWorkRequestBuilder<BatteryWorker>().setInitialDelay(sec, TimeUnit.SECONDS).build()
-            wm.enqueueUniqueWork("lb_burst_$i", ExistingWorkPolicy.REPLACE, req)
-        }
-    }
-
     fun now(ctx: Context, delaySec: Long = 0) {
         val req = OneTimeWorkRequestBuilder<BatteryWorker>().setInitialDelay(delaySec, TimeUnit.SECONDS).build()
         WorkManager.getInstance(ctx).enqueueUniqueWork("lb_now", ExistingWorkPolicy.REPLACE, req)
     }
 }
 
-/** Connect/disconnect, Bluetooth on/off and charger events trigger one short refresh. */
+/** Connect/disconnect, Bluetooth on/off and charger events: refresh immediately (no WorkManager delay). */
 class SystemEventReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, i: Intent) {
         val c = ctx.applicationContext
-        when (i.action) {
-            BluetoothDevice.ACTION_ACL_CONNECTED, BluetoothAdapter.ACTION_STATE_CHANGED -> Scheduler.burst(c)
-            else -> Scheduler.now(c, 2)
+        val action = i.action
+        val result = goAsync()
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                when (action) {
+                    Intent.ACTION_POWER_CONNECTED, Intent.ACTION_POWER_DISCONNECTED -> {
+                        delay(400)
+                        Repo.refreshPhone(c)
+                    }
+                    BluetoothDevice.ACTION_ACL_CONNECTED,
+                    BluetoothDevice.ACTION_ACL_DISCONNECTED,
+                    BluetoothAdapter.ACTION_STATE_CHANGED -> Repo.quickBurst(c)
+                    else -> Repo.refresh(c, gatt = false)
+                }
+            } finally {
+                result.finish()
+            }
         }
+        // the slower full read (including BLE battery service) follows a few seconds later
+        if (action == BluetoothDevice.ACTION_ACL_CONNECTED) Scheduler.now(c, 6)
     }
 }
 
-/** Some headsets push their battery level via an AT command; capture it when available. */
+/** Some headsets push their battery level via an AT command; capture it and refresh right away. */
 class VendorReceiver : BroadcastReceiver() {
-    @Suppress("DEPRECATION")
     override fun onReceive(ctx: Context, i: Intent) {
-        val cmd = i.getStringExtra(BluetoothHeadset.EXTRA_VENDOR_SPECIFIC_HEADSET_EVENT_CMD) ?: return
-        if (!cmd.contains("IPHONEACCEV")) return
-        val args = i.getSerializableExtra(BluetoothHeadset.EXTRA_VENDOR_SPECIFIC_HEADSET_EVENT_ARGS) as? Array<*> ?: return
-        val dev = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-        val n = (args.getOrNull(0) as? Number)?.toInt() ?: return
-        var k = 1
-        repeat(n) {
-            val key = (args.getOrNull(k) as? Number)?.toInt()
-            val v = (args.getOrNull(k + 1) as? Number)?.toInt()
-            if (key == 1 && v != null) HfpCache.put(ctx, dev.address, ((v + 1) * 10).coerceIn(0, 100))
-            k += 2
+        val c = ctx.applicationContext
+        if (!HfpCache.parseVendor(c, i)) return
+        val result = goAsync()
+        CoroutineScope(Dispatchers.Default).launch {
+            try { Repo.refresh(c, gatt = false) } finally { result.finish() }
         }
-        Scheduler.now(ctx.applicationContext, 1)
     }
 }

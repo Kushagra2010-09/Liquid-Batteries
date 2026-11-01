@@ -4,6 +4,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -29,12 +31,13 @@ object Live {
 }
 
 /**
- * Keeps a tiny receiver alive so the widget updates the instant the phone battery changes
- * (Android does not allow ACTION_BATTERY_CHANGED to be received from the manifest).
+ * Keeps receivers alive so the widget updates the instant the phone battery changes, a device
+ * connects/disconnects, or a device reports a new battery level.
  */
 class LiveService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var pending: Job? = null
+    private var fastJob: Job? = null
+    private var burstJob: Job? = null
 
     private val phoneReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -43,9 +46,29 @@ class LiveService : Service() {
     }
 
     private val deviceReceiver = object : BroadcastReceiver() {
+        @Suppress("DEPRECATION")
         override fun onReceive(c: Context, i: Intent) {
-            pending?.cancel()
-            pending = scope.launch { delay(1500); Repo.refresh(c) }
+            when (i.action) {
+                "android.bluetooth.device.action.BATTERY_LEVEL_CHANGED" -> {
+                    val lvl = i.getIntExtra("android.bluetooth.device.extra.BATTERY_LEVEL", -1)
+                    val dev = i.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                    if (lvl in 0..100 && dev != null) HfpCache.put(c, dev.address, lvl)
+                    fastJob?.cancel()
+                    fastJob = scope.launch { Repo.refresh(c, gatt = false) }
+                }
+                BluetoothHeadset.ACTION_VENDOR_SPECIFIC_HEADSET_EVENT -> {
+                    HfpCache.parseVendor(c, i)
+                    fastJob?.cancel()
+                    fastJob = scope.launch { Repo.refresh(c, gatt = false) }
+                }
+                else -> {
+                    burstJob?.cancel()
+                    burstJob = scope.launch {
+                        Repo.quickBurst(c)
+                        Repo.refresh(c)   // then the slower full read incl. BLE battery service
+                    }
+                }
+            }
         }
     }
 
@@ -65,16 +88,23 @@ class LiveService : Service() {
         ServiceCompat.startForeground(this, 71, n, if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0)
 
         ContextCompat.registerReceiver(this, phoneReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+
         val bt = IntentFilter().apply {
             addAction("android.bluetooth.device.action.BATTERY_LEVEL_CHANGED")
             addAction("android.bluetooth.device.action.ACL_CONNECTED")
             addAction("android.bluetooth.device.action.ACL_DISCONNECTED")
             addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED")
             addAction("android.bluetooth.headset.profile.action.CONNECTION_STATE_CHANGED")
+            addAction("android.bluetooth.adapter.action.STATE_CHANGED")
         }
         ContextCompat.registerReceiver(this, deviceReceiver, bt, ContextCompat.RECEIVER_EXPORTED)
 
-        // Bluetooth devices only report occasionally, so also re-check them every 5 minutes.
+        val vendor = IntentFilter(BluetoothHeadset.ACTION_VENDOR_SPECIFIC_HEADSET_EVENT).apply {
+            addCategory("android.bluetooth.headset.intent.category.companyid.76")
+        }
+        ContextCompat.registerReceiver(this, deviceReceiver, vendor, ContextCompat.RECEIVER_EXPORTED)
+
+        // safety net: devices that never announce changes are re-checked every 5 minutes
         scope.launch {
             while (isActive) {
                 delay(5 * 60_000L)
