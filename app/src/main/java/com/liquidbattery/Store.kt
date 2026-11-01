@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
@@ -47,9 +48,9 @@ class Store(context: Context) {
         )
     }
 
-    val settings: Flow<UiSettings> = dataStore.data.map { readSettings(it) }
-    val snapshot: Flow<BatterySnapshot?> = dataStore.data.map { decodeSnap(it[K.snapshot]) }
-    val metas: Flow<Map<String, DeviceMeta>> = dataStore.data.map { decodeMetas(it[K.metas]) }
+    val settings: Flow<UiSettings> = dataStore.data.map { readSettings(it) }.distinctUntilChanged()
+    val snapshot: Flow<BatterySnapshot?> = dataStore.data.map { decodeSnap(it[K.snapshot]) }.distinctUntilChanged()
+    val metas: Flow<Map<String, DeviceMeta>> = dataStore.data.map { decodeMetas(it[K.metas]) }.distinctUntilChanged()
 
     suspend fun updateSettings(f: (UiSettings) -> UiSettings) {
         dataStore.edit { p ->
@@ -81,7 +82,7 @@ class Store(context: Context) {
         }
     }
 
-    val alertState: Flow<AlertState> = dataStore.data.map { decodeAlerts(it[K.alerts]) }
+    val alertState: Flow<AlertState> = dataStore.data.map { decodeAlerts(it[K.alerts]) }.distinctUntilChanged()
 
     suspend fun updateAlerts(f: (AlertState) -> AlertState) {
         dataStore.edit { p -> p[K.alerts] = encodeAlerts(f(decodeAlerts(p[K.alerts]))) }

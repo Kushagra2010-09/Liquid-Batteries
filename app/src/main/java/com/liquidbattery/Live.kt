@@ -13,6 +13,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -38,6 +39,33 @@ class LiveService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var fastJob: Job? = null
     private var burstJob: Job? = null
+    private var loopJob: Job? = null
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            if (i.action == Intent.ACTION_SCREEN_ON) scope.launch { Repo.refresh(c, gatt = false) }
+            startLoop()
+        }
+    }
+
+    /** Screen on: quick check every 5 s (full BLE read every minute). Screen off: every 5 min. */
+    private fun startLoop() {
+        loopJob?.cancel()
+        val pm = getSystemService(PowerManager::class.java)
+        loopJob = scope.launch {
+            var tick = 0
+            while (isActive) {
+                if (pm.isInteractive) {
+                    delay(5_000L)
+                    tick++
+                    Repo.refresh(this@LiveService, gatt = tick % 12 == 0)
+                } else {
+                    delay(5 * 60_000L)
+                    Repo.refresh(this@LiveService, gatt = true)
+                }
+            }
+        }
+    }
 
     private val phoneReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -104,13 +132,12 @@ class LiveService : Service() {
         }
         ContextCompat.registerReceiver(this, deviceReceiver, vendor, ContextCompat.RECEIVER_EXPORTED)
 
-        // safety net: devices that never announce changes are re-checked every 5 minutes
-        scope.launch {
-            while (isActive) {
-                delay(5 * 60_000L)
-                Repo.refresh(this@LiveService)
-            }
+        val screen = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
         }
+        ContextCompat.registerReceiver(this, screenReceiver, screen, ContextCompat.RECEIVER_NOT_EXPORTED)
+        startLoop()
         scope.launch { Repo.refresh(this@LiveService) }
     }
 
@@ -119,6 +146,7 @@ class LiveService : Service() {
     override fun onDestroy() {
         try { unregisterReceiver(phoneReceiver) } catch (e: Throwable) { }
         try { unregisterReceiver(deviceReceiver) } catch (e: Throwable) { }
+        try { unregisterReceiver(screenReceiver) } catch (e: Throwable) { }
         scope.cancel()
         super.onDestroy()
     }

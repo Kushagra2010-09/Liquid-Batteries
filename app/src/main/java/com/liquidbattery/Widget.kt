@@ -6,6 +6,8 @@ import android.content.res.Configuration
 import android.appwidget.AppWidgetManager
 import android.text.format.DateFormat
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.dp
 import androidx.glance.*
 import androidx.glance.action.ActionParameters
@@ -25,11 +27,18 @@ class LiquidWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val store = Store(context)
-        val s = store.settings.first()
-        val snap = store.snapshot.first()
-        val rows = resolve(snap, store.metas.first())
-        val alerts = store.alertState.first().charge
-        provideContent { WidgetContent(context, s, snap, rows, alerts) }
+        val s0 = store.settings.first()
+        val snap0 = store.snapshot.first()
+        val metas0 = store.metas.first()
+        val alerts0 = store.alertState.first()
+        provideContent {
+            // collected live: the widget redraws the moment the stored data changes
+            val s by store.settings.collectAsState(initial = s0)
+            val snap by store.snapshot.collectAsState(initial = snap0)
+            val metas by store.metas.collectAsState(initial = metas0)
+            val alerts by store.alertState.collectAsState(initial = alerts0)
+            WidgetContent(context, s, snap, resolve(snap, metas), alerts.charge)
+        }
     }
 }
 

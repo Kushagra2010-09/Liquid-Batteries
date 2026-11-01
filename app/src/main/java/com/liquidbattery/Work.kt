@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class App : Application() {
     override fun onCreate() {
@@ -26,6 +27,7 @@ class App : Application() {
 
 object Repo {
     private val mutex = Mutex()
+    private val gattBusy = AtomicBoolean(false)
 
     /** Cheap update used by live mode: only the phone battery, no Bluetooth reads. */
     suspend fun refreshPhone(ctx: Context) {
@@ -51,23 +53,58 @@ object Repo {
      * gatt = false is the FAST path (well under a second): connection state + instantly available
      * battery sources only. gatt = true also opens BLE connections to read 0x180F (can take seconds).
      */
-    suspend fun refresh(ctx: Context, gatt: Boolean = true) = mutex.withLock {
+    suspend fun refresh(ctx: Context, gatt: Boolean = true) {
         val c = ctx.applicationContext
-        var changed = true
+        mutex.withLock {
+            var changed = true
+            try {
+                val store = Store(c)
+                val prev = store.snapshot.first()
+                val phone = Reader.phone(c)
+                val (devs, btOn) = Reader.devices(c, prev?.devices.orEmpty().associateBy { it.id }, gatt = false)
+                Alerts.process(c, store, prev?.devices.orEmpty(), devs, store.metas.first())
+                val snap = BatterySnapshot(phone, devs, btOn, Reader.hasPermission(c), System.currentTimeMillis())
+                // skip the save and the widget redraw when nothing visible changed (saves battery)
+                changed = prev == null || !sameContent(prev, snap)
+                if (changed) store.saveSnapshot(snap)
+            } catch (e: Throwable) {
+                // keep the previous snapshot; never crash a background refresh
+            }
+            if (changed) LiquidWidget().updateAll(c)
+        }
+        // the slow BLE battery read runs OUTSIDE the lock, so quick refreshes are never blocked by it
+        if (gatt) gattPass(c)
+    }
+
+    private suspend fun gattPass(c: Context) {
+        if (!gattBusy.compareAndSet(false, true)) return
         try {
             val store = Store(c)
-            val prev = store.snapshot.first()
-            val phone = Reader.phone(c)
-            val (devs, btOn) = Reader.devices(c, prev?.devices.orEmpty().associateBy { it.id }, gatt)
-            Alerts.process(c, store, prev?.devices.orEmpty(), devs, store.metas.first())
-            val snap = BatterySnapshot(phone, devs, btOn, Reader.hasPermission(c), System.currentTimeMillis())
-            // skip the save and the widget redraw when nothing visible changed (saves battery)
-            changed = prev == null || !sameContent(prev, snap)
-            if (changed) store.saveSnapshot(snap)
+            val targets = (store.snapshot.first()?.devices.orEmpty()).filter { it.connected && it.level == null }
+            if (targets.isEmpty() || !Reader.hasPermission(c)) return
+            for (t in targets) {
+                val lvl = Reader.gattLevel(c, t.id) ?: continue
+                mutex.withLock {
+                    val latest = store.snapshot.first() ?: return@withLock
+                    val now = System.currentTimeMillis()
+                    var hit = false
+                    val devs = latest.devices.map { d ->
+                        if (d.id == t.id && d.connected && d.level == null) {
+                            hit = true
+                            d.copy(level = lvl, lastKnownLevel = lvl, lastKnownAt = now, source = "GATT Battery Service (0x180F)", updatedAt = now)
+                        } else d
+                    }
+                    if (hit) {
+                        Alerts.process(c, store, latest.devices, devs, store.metas.first())
+                        store.saveSnapshot(latest.copy(devices = devs, updatedAt = now))
+                        LiquidWidget().updateAll(c)
+                    }
+                }
+            }
         } catch (e: Throwable) {
-            // keep the previous snapshot; never crash a background refresh
+        } finally {
+            gattBusy.set(false)
         }
-        if (changed) LiquidWidget().updateAll(c)
     }
 
     /** A device connects in stages (link, then audio profile, then battery report): re-check quickly 3 times. */

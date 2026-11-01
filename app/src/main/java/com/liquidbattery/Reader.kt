@@ -186,6 +186,14 @@ object Reader {
 
     /** Reads the standard Battery Level characteristic (0x2A19) of the Battery Service (0x180F). */
     @SuppressLint("MissingPermission")
+    suspend fun gattLevel(c: Context, address: String): Int? {
+        val adapter = c.getSystemService(BluetoothManager::class.java)?.adapter ?: return null
+        if (!hasPermission(c)) return null
+        val d = try { adapter.getRemoteDevice(address) } catch (e: Throwable) { return null }
+        if (d.type == BluetoothDevice.DEVICE_TYPE_CLASSIC) return null
+        return readGatt(c, d)
+    }
+
     private suspend fun readGatt(c: Context, d: BluetoothDevice): Int? = withTimeoutOrNull(9000) {
         suspendCancellableCoroutine<Int?> { cont ->
             var gatt: BluetoothGatt? = null
