@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 import androidx.glance.*
 import androidx.glance.action.ActionParameters
+import androidx.glance.action.actionParametersOf
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.*
 import androidx.glance.appwidget.action.ActionCallback
@@ -27,7 +28,8 @@ class LiquidWidget : GlanceAppWidget() {
         val s = store.settings.first()
         val snap = store.snapshot.first()
         val rows = resolve(snap, store.metas.first())
-        provideContent { WidgetContent(context, s, snap, rows) }
+        val alerts = store.alertState.first().charge
+        provideContent { WidgetContent(context, s, snap, rows, alerts) }
     }
 }
 
@@ -47,7 +49,7 @@ class RefreshAction : ActionCallback {
 }
 
 @Composable
-private fun WidgetContent(ctx: Context, s: UiSettings, snap: BatterySnapshot?, all: List<DeviceRow>) {
+private fun WidgetContent(ctx: Context, s: UiSettings, snap: BatterySnapshot?, all: List<DeviceRow>, alerts: List<ChargeAlert>) {
     val size = LocalSize.current
     val dark = when (s.widgetTheme) {
         1 -> false
@@ -59,6 +61,8 @@ private fun WidgetContent(ctx: Context, s: UiSettings, snap: BatterySnapshot?, a
         // connected devices first, then the rest, keeping the user's order inside each group
         .sortedBy { if (it.connected) 0 else 1 }
         .map { WDev(it.category.icon, it.name, it.level, it.status(s.showLastKnown)) }
+    val sorted = alerts.sortedByDescending { it.at }
+    val topAlert = sorted.firstOrNull()
     val ph = snap?.phone
     val args = WArgs(
         dark = dark,
@@ -68,10 +72,11 @@ private fun WidgetContent(ctx: Context, s: UiSettings, snap: BatterySnapshot?, a
         charging = ph?.charging == true,
         plug = ph?.plug ?: "",
         health = ph?.health ?: "",
-        btOn = snap?.btOn == true,
         devices = devices,
         expanded = !s.widgetCompact,
-        updated = snap?.let { "Updated " + DateFormat.getTimeFormat(ctx).format(Date(it.updatedAt)) } ?: "Not updated yet"
+        updated = snap?.let { "Updated " + DateFormat.getTimeFormat(ctx).format(Date(it.updatedAt)) } ?: "Not updated yet",
+        alert = topAlert?.let { WAlert(it.name, it.level) },
+        alertExtra = (sorted.size - 1).coerceAtLeast(0)
     )
     val bmp = WidgetArt.draw(size.width.value, size.height.value, ctx.resources.displayMetrics.density, args)
 
@@ -85,6 +90,15 @@ private fun WidgetContent(ctx: Context, s: UiSettings, snap: BatterySnapshot?, a
         // invisible tap target over the refresh arrow (top-right)
         Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.TopEnd) {
             Spacer(GlanceModifier.size(46.dp).clickable(actionRunCallback<RefreshAction>()))
+        }
+        // tap the "Charge <device>" banner to dismiss it
+        if (topAlert != null) {
+            Box(GlanceModifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                Spacer(
+                    GlanceModifier.fillMaxWidth().height(46.dp)
+                        .clickable(actionRunCallback<DismissAlertAction>(actionParametersOf(ALERT_ID to topAlert.id)))
+                )
+            }
         }
     }
 }

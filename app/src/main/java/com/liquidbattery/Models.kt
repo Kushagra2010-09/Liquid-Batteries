@@ -64,6 +64,10 @@ data class UiSettings(
     val liveUpdates: Boolean = true
 )
 
+data class ChargeAlert(val id: String, val name: String, val level: Int, val at: Long)
+
+data class AlertState(val charge: List<ChargeAlert> = emptyList(), val warned: Set<String> = emptySet())
+
 data class DeviceRow(
     val id: String,
     val name: String,

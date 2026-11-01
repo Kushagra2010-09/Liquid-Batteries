@@ -6,6 +6,8 @@ import android.text.TextUtils
 
 class WDev(val icon: String, val name: String, val level: Int?, val status: String)
 
+class WAlert(val name: String, val level: Int)
+
 class WArgs(
     val dark: Boolean,
     val panelAlpha: Float,
@@ -14,10 +16,11 @@ class WArgs(
     val charging: Boolean,
     val plug: String,
     val health: String,
-    val btOn: Boolean,
     val devices: List<WDev>,
     val expanded: Boolean,
-    val updated: String
+    val updated: String,
+    val alert: WAlert?,
+    val alertExtra: Int
 )
 
 /**
@@ -57,21 +60,25 @@ object WidgetArt {
         val ink = if (a.dark) 0xFFF4F7FF.toInt() else 0xFF0F1A2E.toInt()
         val dim = al(ink, 0.6f)
         val pad = 14f * u
-        val btColor = if (a.btOn) 0xFF6FD6A5.toInt() else dim
 
         // ── Small: just a beautiful ring
         if (wDp < 170f && hDp < 170f) {
-            val d = minOf(w, h) - 2 * 17f * u
-            ring(c, w / 2f, h / 2f + 2f * u, d, a.phoneLevel, u, ink, dim, a.dark, if (a.charging) "⚡ Charging" else "Phone")
-            c.drawCircle(pad, pad + 3f * u, 3f * u, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = btColor })
+            val bh = 26f * u
+            val extra = if (a.alert != null) bh + 6f * u else 0f
+            val m = if (a.alert != null) 10f * u else 17f * u
+            val d = minOf(w, h - extra) - 2 * m
+            ring(c, w / 2f, (h - extra) / 2f + 2f * u, d, a.phoneLevel, u, ink, dim, a.dark, if (a.charging) "⚡ Charging" else "Phone")
             c.drawText("↻", w - pad, pad + 10f * u, tp(15f * u, dim, regular, Paint.Align.RIGHT))
+            if (a.alert != null) banner(c, 8f * u, h - 8f * u - bh, w - 16f * u, bh, a, u, ink)
             return bmp
         }
 
-        header(c, w, pad, u, a, dim, btColor)
+        header(c, w, pad, u, a, dim)
         val top = pad + 24f * u
-        val footerH = if (hDp >= 200f) 16f * u else 0f
-        val bottom = h - pad - footerH
+        val bannerH = 30f * u
+        val hasAlert = a.alert != null
+        val footerH = if (hDp >= 200f && !hasAlert) 16f * u else 0f
+        val bottom = h - pad - footerH - (if (hasAlert) bannerH + 8f * u else 0f)
         val rowH = (if (a.expanded) 44f else 34f) * u
         val sub = if (a.charging) "⚡ Charging" else "Phone"
 
@@ -99,7 +106,27 @@ object WidgetArt {
                 c.drawText("Tap to open", w - pad, h - pad, tp(9f * u, dim, regular, Paint.Align.RIGHT))
             }
         }
+        if (a.alert != null) banner(c, pad, h - pad - bannerH, w - 2 * pad, bannerH, a, u, ink)
         return bmp
+    }
+
+    // ── "Charge <device>" banner: amber glass pill, tap to dismiss
+    private fun banner(c: Canvas, x: Float, y: Float, wd: Float, hd: Float, a: WArgs, u: Float, ink: Int) {
+        val alert = a.alert ?: return
+        val amber = 0xFFF2B35C.toInt()
+        val r = hd / 2f
+        val rect = RectF(x, y, x + wd, y + hd)
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG)
+        bg.color = al(amber, if (a.dark) 0.22f else 0.30f)
+        c.drawRoundRect(rect, r, r, bg)
+        val st = Paint(Paint.ANTI_ALIAS_FLAG)
+        st.style = Paint.Style.STROKE; st.strokeWidth = 1f * u; st.color = al(amber, 0.55f)
+        c.drawRoundRect(rect, r, r, st)
+        c.drawText("🔋", x + r, y + hd / 2f + hd * 0.16f, tp(hd * 0.46f, ink, regular, Paint.Align.CENTER))
+        c.drawText("✕", x + wd - r, y + hd / 2f + hd * 0.15f, tp(hd * 0.42f, al(ink, 0.6f), regular, Paint.Align.CENTER))
+        val more = if (a.alertExtra > 0) "  +${a.alertExtra}" else ""
+        val t = tp(hd * 0.40f, ink, medium)
+        c.drawText(fit("Charge ${alert.name} · ${alert.level}%$more", t, wd - hd * 2f), x + hd, y + hd / 2f + hd * 0.14f, t)
     }
 
     // ── glass panel with liquid colour blobs, gloss and a light-catching border
@@ -138,15 +165,11 @@ object WidgetArt {
         c.drawCircle(cx, cy, r, p)
     }
 
-    private fun header(c: Canvas, w: Float, pad: Float, u: Float, a: WArgs, dim: Int, btColor: Int) {
+    private fun header(c: Canvas, w: Float, pad: Float, u: Float, a: WArgs, dim: Int) {
         val bp = tp(9f * u, a.accent, medium)
         bp.letterSpacing = 0.2f
         c.drawText("LIQUID BATTERY", pad, pad + 9f * u, bp)
         c.drawText("↻", w - pad, pad + 11f * u, tp(15f * u, dim, regular, Paint.Align.RIGHT))
-        val t = tp(9f * u, dim, medium, Paint.Align.RIGHT)
-        val tx = w - pad - 24f * u
-        c.drawText("BT", tx, pad + 9f * u, t)
-        c.drawCircle(tx - t.measureText("BT") - 6f * u, pad + 6.2f * u, 3f * u, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = btColor })
     }
 
     // ── the main ring: sweep gradient, soft glow, liquid bead at the tip

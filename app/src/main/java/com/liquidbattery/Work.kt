@@ -38,18 +38,29 @@ object Repo {
         }
     }
 
+    private fun sameContent(a: BatterySnapshot, b: BatterySnapshot): Boolean =
+        a.phone.copy(tempC = 0f) == b.phone.copy(tempC = 0f) &&
+            a.btOn == b.btOn && a.hasPermission == b.hasPermission &&
+            b.updatedAt - a.updatedAt < 5 * 60_000L &&
+            a.devices.map { it.copy(updatedAt = 0L, lastKnownAt = 0L) } == b.devices.map { it.copy(updatedAt = 0L, lastKnownAt = 0L) }
+
     suspend fun refresh(ctx: Context) = mutex.withLock {
         val c = ctx.applicationContext
+        var changed = true
         try {
             val store = Store(c)
             val prev = store.snapshot.first()
             val phone = Reader.phone(c)
             val (devs, btOn) = Reader.devices(c, prev?.devices.orEmpty().associateBy { it.id })
-            store.saveSnapshot(BatterySnapshot(phone, devs, btOn, Reader.hasPermission(c), System.currentTimeMillis()))
+            Alerts.process(c, store, prev?.devices.orEmpty(), devs, store.metas.first())
+            val snap = BatterySnapshot(phone, devs, btOn, Reader.hasPermission(c), System.currentTimeMillis())
+            // skip the save and the widget redraw when nothing visible changed (saves battery)
+            changed = prev == null || !sameContent(prev, snap)
+            if (changed) store.saveSnapshot(snap)
         } catch (e: Throwable) {
             // keep the previous snapshot; never crash a background refresh
         }
-        LiquidWidget().updateAll(c)
+        if (changed) LiquidWidget().updateAll(c)
     }
 }
 

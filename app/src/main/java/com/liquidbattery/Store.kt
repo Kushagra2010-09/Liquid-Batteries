@@ -27,6 +27,7 @@ class Store(context: Context) {
         val live = booleanPreferencesKey("live")
         val snapshot = stringPreferencesKey("snapshot")
         val metas = stringPreferencesKey("metas")
+        val alerts = stringPreferencesKey("alerts")
     }
 
     private fun readSettings(p: Preferences): UiSettings {
@@ -78,6 +79,35 @@ class Store(context: Context) {
             orderedIds.forEachIndexed { i, id -> m[id] = (m[id] ?: DeviceMeta(id)).copy(order = i) }
             p[K.metas] = encodeMetas(m.values)
         }
+    }
+
+    val alertState: Flow<AlertState> = dataStore.data.map { decodeAlerts(it[K.alerts]) }
+
+    suspend fun updateAlerts(f: (AlertState) -> AlertState) {
+        dataStore.edit { p -> p[K.alerts] = encodeAlerts(f(decodeAlerts(p[K.alerts]))) }
+    }
+
+    private fun encodeAlerts(s: AlertState): String {
+        val o = JSONObject()
+        val arr = JSONArray()
+        s.charge.forEach { arr.put(JSONObject().put("id", it.id).put("n", it.name).put("l", it.level).put("at", it.at)) }
+        o.put("charge", arr)
+        o.put("warned", JSONArray(s.warned.toList()))
+        return o.toString()
+    }
+
+    private fun decodeAlerts(s: String?): AlertState {
+        if (s == null) return AlertState()
+        return runCatching {
+            val o = JSONObject(s)
+            val ca = o.getJSONArray("charge")
+            val charge = (0 until ca.length()).map { i ->
+                val j = ca.getJSONObject(i)
+                ChargeAlert(j.getString("id"), j.getString("n"), j.getInt("l"), j.getLong("at"))
+            }
+            val wa = o.getJSONArray("warned")
+            AlertState(charge, (0 until wa.length()).map { wa.getString(it) }.toSet())
+        }.getOrDefault(AlertState())
     }
 
     // ---- JSON ----

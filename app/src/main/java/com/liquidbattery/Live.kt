@@ -74,10 +74,10 @@ class LiveService : Service() {
         }
         ContextCompat.registerReceiver(this, deviceReceiver, bt, ContextCompat.RECEIVER_EXPORTED)
 
-        // Bluetooth devices only report occasionally, so also re-check them every 3 minutes.
+        // Bluetooth devices only report occasionally, so also re-check them every 5 minutes.
         scope.launch {
             while (isActive) {
-                delay(3 * 60_000L)
+                delay(5 * 60_000L)
                 Repo.refresh(this@LiveService)
             }
         }
